@@ -1,0 +1,2 @@
+Ce dossier contient les données brutes téléchargées depuis GDELT.
+Les fichiers .csv et .zip sont ignorés par git (.gitignore).

@@ -1,0 +1,24 @@
+# ── Core HTTP & téléchargement ──────────────────────────────────────────────
+requests==2.32.3
+urllib3==2.2.1
+
+# ── Traitement des données ───────────────────────────────────────────────────
+pandas==2.2.2
+numpy==1.26.4
+
+# ── Téléchargement parallèle / async ────────────────────────────────────────
+tqdm==4.66.4           # barre de progression
+
+# ── Compression & archives ──────────────────────────────────────────────────
+# zipfile est dans la stdlib Python, pas besoin de l'installer
+
+# ── Configuration ────────────────────────────────────────────────────────────
+python-dotenv==1.0.1
+
+# ── Logging avancé ──────────────────────────────────────────────────────────
+loguru==0.7.2
+
+# ── Qualité du code (optionnel, dev) ─────────────────────────────────────────
+# pytest==8.2.2
+# black==24.4.2
+# flake8==7.0.0

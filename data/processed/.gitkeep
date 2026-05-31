@@ -1,0 +1,2 @@
+Ce dossier contient les données nettoyées et prêtes à l'analyse.
+Les fichiers .csv et .parquet sont ignorés par git.
