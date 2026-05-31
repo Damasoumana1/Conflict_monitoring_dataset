@@ -54,23 +54,7 @@ GDELT_CONFIG = {
     # Filtres géographiques (codes pays ISO-Alpha2)
     # Exemples Afrique : "CI","SN","ML","BF","NG","CD","SO","ET","SD","LY"
     # Laisser vide [] pour ne PAS filtrer (téléchargement global)
-    "country_filter": [
-        "CI",  # Côte d'Ivoire
-        "ML",  # Mali
-        "BF",  # Burkina Faso
-        "NE",  # Niger
-        "SN",  # Sénégal
-        "NG",  # Nigeria
-        "GH",  # Ghana
-        "GN",  # Guinée
-        "TG",  # Togo
-        "BJ",  # Bénin
-        "MR",  # Mauritanie
-        "GM",  # Gambie
-        "GW",  # Guinée-Bissau
-        "SL",  # Sierra Leone
-        "LR",  # Liberia
-    ],
+    "country_filter": [],
 
     # Timeout en secondes pour les requêtes HTTP
     "request_timeout": 60,

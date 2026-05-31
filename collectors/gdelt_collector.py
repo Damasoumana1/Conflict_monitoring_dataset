@@ -12,9 +12,13 @@ Fonctionnalités :
 """
 
 import io
+import os
 import time
 import zipfile
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
@@ -33,6 +37,10 @@ from config import (
     PROCESSED_DIR,
     LOGS_DIR,
 )
+
+CACHE_FILE = "master_file_cache.csv"
+CACHE_DIR = Path("cache_gdelt")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -73,6 +81,17 @@ class GDELTCollector:
             "User-Agent": "ConflictMonitoringDataset/1.0 (Academic Research Project)"
         })
 
+        retry = Retry(
+            total=5,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+        )
+
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
     # ──────────────────────────────────────────────────────────────────────────
     # ÉTAPE 1 : Récupérer la liste des fichiers disponibles
     # ──────────────────────────────────────────────────────────────────────────
@@ -84,6 +103,10 @@ class GDELTCollector:
         """
         logger.info("📋 Récupération de la liste maîtresse GDELT V2...")
         url = self.config["master_file_url"]
+
+        if os.path.exists(CACHE_FILE):
+            logger.info("📦 Chargement du cache local master file")
+            return pd.read_csv(CACHE_FILE)
 
         try:
             response = self.session.get(url, timeout=self.config["request_timeout"])
@@ -106,6 +129,7 @@ class GDELTCollector:
                 })
 
         df = pd.DataFrame(records)
+        df.to_csv(CACHE_FILE, index=False)
         logger.success(f"✅ {len(df)} fichiers trouvés dans la liste maîtresse.")
         return df
 
@@ -244,7 +268,7 @@ class GDELTCollector:
         """
         # Garder seulement les colonnes configurées
         available_cols = [c for c in COLUMNS_TO_KEEP if c in df.columns]
-        df = df[available_cols].copy()
+        df = df.loc[:, available_cols]
 
         # Conversions numériques
         numeric_cols = [
@@ -321,47 +345,60 @@ class GDELTCollector:
 
         logger.info(f"📦 {len(files_to_download)} fichier(s) à traiter.")
 
-        # Étape 3, 4, 5 — pour chaque fichier
-        all_frames: List[pd.DataFrame] = []
-        sleep_time = self.config.get("sleep_between_downloads", 1)
+        # Étape 3, 4, 5 — traitement en batch et écriture sur disque
+        output_file = PROCESSED_DIR / "gdelt_stream.parquet"
+        output_csv = PROCESSED_DIR / "gdelt_stream.csv"
+        max_workers = self.config.get("max_workers", 5)
+        batch_size = self.config.get("batch_size", 10)
+        results: List[pd.DataFrame] = []
+        fallback_to_csv = False
+        total_events = 0
+        processed_files = 0
 
-        for _, row in tqdm(files_to_download.iterrows(), total=len(files_to_download), desc="GDELT"):
-            df_raw = self.download_and_extract(row["url"], row["filename"])
+        for batch_start in range(0, len(files_to_download), batch_size):
+            batch = files_to_download.iloc[batch_start : batch_start + batch_size]
+            results.clear()
 
-            if df_raw is None or df_raw.empty:
-                continue
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(self.process_file, row)
+                    for _, row in batch.iterrows()
+                ]
 
-            # Filtre géographique
-            df_geo = self.apply_geo_filter(df_raw)
+                for f in tqdm(as_completed(futures), total=len(futures), desc="GDELT"):
+                    df = f.result()
+                    if df is not None and not df.empty:
+                        results.append(df)
 
-            if df_geo.empty:
-                logger.debug(f"   → 0 événements après filtre géo pour {row['filename']}")
-                continue
+            for df in results:
+                try:
+                    if not fallback_to_csv:
+                        if output_file.exists():
+                            df.to_parquet(output_file, engine="pyarrow", index=False, append=True)
+                        else:
+                            df.to_parquet(output_file, engine="pyarrow", index=False)
+                        output_path = output_file
+                    else:
+                        raise RuntimeError("fallback-to-csv")
+                except Exception as e:
+                    fallback_to_csv = True
+                    logger.warning(f"Parquet append impossible, bascule sur CSV : {e}")
+                    if output_csv.exists():
+                        df.to_csv(output_csv, mode="a", header=False, index=False, encoding="utf-8-sig")
+                    else:
+                        df.to_csv(output_csv, mode="w", header=True, index=False, encoding="utf-8-sig")
+                    output_path = output_csv
 
-            # Nettoyage
-            df_clean = self.clean_dataframe(df_geo)
-            all_frames.append(df_clean)
+                total_events += len(df)
+                processed_files += 1
 
-            logger.info(
-                f"   ✓ {row['filename']} → {len(df_clean)} événements retenus"
-            )
-
-            # Pause courtoise entre les requêtes
-            time.sleep(sleep_time)
-
-        # Étape 6 — Combinaison et sauvegarde
-        if not all_frames:
+        if processed_files == 0:
             logger.warning("Aucun événement collecté. Vérifiez vos filtres.")
             return
 
-        final_df = pd.concat(all_frames, ignore_index=True)
-        final_df = final_df.drop_duplicates(subset=["GlobalEventID"])
-
-        logger.info(f"\n📊 Total : {len(final_df)} événements uniques collectés.")
-        saved_path = self.save(final_df)
-
+        logger.info(f"\n📊 Total : {total_events} événements collectés sur {processed_files} fichier(s).")
         logger.info("=" * 60)
-        logger.success(f"✅ Collecte terminée ! Fichier : {saved_path}")
+        logger.success(f"✅ Collecte terminée ! Fichier : {output_path}")
         logger.info("=" * 60)
 
-        return final_df
+        return output_path
